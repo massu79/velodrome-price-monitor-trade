@@ -1,3 +1,7 @@
 requests
-gql[requests]
+gql
+requests_toolbelt
 python-dotenv
+aiohttp
+yarl
+multidict
