@@ -1,4 +1,3 @@
 requests
-gql
+gql[requests]
 python-dotenv
-requests_toolbelt
