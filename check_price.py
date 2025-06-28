@@ -1,73 +1,47 @@
-
-import json, os, time
-from datetime import datetime
 import requests
-from gql import gql, Client
-from gql.transport.requests import RequestsHTTPTransport
+from datetime import datetime, timedelta
 
-TOKEN_ID = "0xe9244d1c2ce9f06e46b7056d88f7b8b6d911e6b3"  # SUSD/USDC Pool ID on Velodrome V2
-SUBGRAPH_URL = "https://api.thegraph.com/subgraphs/name/velodrome-labs/velodrome-v2"
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-K_FACTOR = 0.8
+def fetch_velodrome_price(pair_address: str):
+    url = "https://api.thegraph.com/subgraphs/name/velodrome/v2"  # 最新のサブグラフURLに置き換えてください
+    now = int(datetime.utcnow().timestamp())
+    since = int((datetime.utcnow() - timedelta(hours=24)).timestamp())
 
-def load_json(fn):
-    if os.path.exists(fn):
-        with open(fn, "r") as f:
-            return json.load(f)
-    return []
-
-def save_json(fn, data):
-    with open(fn, "w") as f:
-        json.dump(data, f)
-
-def fetch_price():
-    client = Client(transport=RequestsHTTPTransport(url=SUBGRAPH_URL), fetch_schema_from_transport=True)
-    q = gql("""
+    query = """
     {
-      pair(id: \"%s\") {
-        token0Price
+      swaps(first: 1000, orderBy: timestamp, orderDirection: desc,
+        where: {pair: "%s", timestamp_gte: %d}) {
+        amount0In
+        amount1In
+        amount0Out
+        amount1Out
+        timestamp
       }
     }
-    """) % TOKEN_ID
-    res = client.execute(q)
-    return float(res["pair"]["token0Price"])
+    """ % (pair_address.lower(), since)
 
-def update_history():
-    hist = load_json("price_history.json")
-    now = int(time.time())
-    hist = [h for h in hist if now - h["ts"] <= 86400]
-    price = fetch_price()
-    hist.append({"ts": now, "price": price})
-    save_json("price_history.json", hist)
-    prices = [h["price"] for h in hist]
-    mn, mx = min(prices), max(prices)
-    mid = (mn + mx) / 2
-    rng = (mid * (1 - K_FACTOR), mid * (1 + K_FACTOR))
-    return price, (mn, mx), rng
+    response = requests.post(url, json={'query': query})
+    data = response.json()
 
-def notify(price, hist_range, monitor_range):
-    msgs = load_json("message_log.json")
-    text = (
-        f"⚠️ [SUSD/USDC] レンジ外アラート！\n\n"
-        f"現在価格: {price:.6f}\n"
-        f"監視レンジ: {monitor_range[0]:.6f} - {monitor_range[1]:.6f}\n"
-        f"24hレンジ: {hist_range[0]:.6f} - {hist_range[1]:.6f}\n\n"
-        f"🕓 {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
-    )
-    res = requests.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": text}
-    )
-    mid = res.json()["result"]["message_id"]
-    msgs.append(mid)
-    while len(msgs) > 10:
-        old = msgs.pop(0)
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage", data={"chat_id": CHAT_ID, "message_id": old})
-    save_json("message_log.json", msgs)
+    if 'data' not in data or 'swaps' not in data['data']:
+        raise ValueError("Invalid data received")
 
-if __name__ == "__main__":
-    price, hist_range, mon_range = update_history()
-    low, high = mon_range
-    if price < low or price > high:
-        notify(price, hist_range, mon_range)
+    prices = []
+    for swap in data['data']['swaps']:
+        try:
+            # 単純な価格推定（例：WETH/USDC）
+            amount_usdc = float(swap["amount0In"] or swap["amount0Out"] or 0)
+            amount_weth = float(swap["amount1Out"] or swap["amount1In"] or 0)
+            if amount_weth > 0:
+                price = amount_usdc / amount_weth
+                prices.append(price)
+        except:
+            continue
+
+    if not prices:
+        raise ValueError("No valid prices found")
+
+    return {
+        "current": prices[0],
+        "min_24h": min(prices),
+        "max_24h": max(prices)
+    }
